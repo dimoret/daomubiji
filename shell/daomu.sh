@@ -2,39 +2,80 @@
 
 #
 # 从daomubiji.com提取完整的小说
-# v0.1
-# huntinux@gmail.com
-# chj90220@126.com
-# 
+# 支持颜色，中断处理，断点续传
+# Huntinux
+# 2013-8-20
+# v1.2
+#
+
 
 MAINURL="www.daomubiji.com"	# index.html's location
 PWD=`pwd`
-TMP="$PWD/tmp"				# temp dir
+TMP="$PWD/tmp"			# temp dir
 PAGESDIR="$TMP/pages"		# each chapter page's local location
 NOVELDIR="$TMP/novel"		# each chapter
 MAINPG="$TMP/index.html"	# index.html local location
-URLS="$TMP/urls"			# contains all the pages' url
-SUFFIX=".txt"				# suffix of novel
+URLS="$TMP/urls"		# contains all the pages' url
+URLSINT="$TMP/urlsint"		# contains all the pages' url
+SUFFIX=".txt"			# suffix of novel
+INTFILE="$TMP/continue"
+
+#
+# 如果在下载过程中受到终止信号
+# 不管是否下载完，都删除最后一个下载的网页
+# 以保证网页能完整下载
+# filename在down_extract()中定义
+# 并且将中断处保存到文件INTFILE中，以便再次运行的时候能续传
+#
+trap '
+	red "Interrupt occurred while downloading:$filename"
+	red "Delete file: $PAGESDIR/$filename"
+	red "Save interrupt point in $INTFILE"
+	rm -f $PAGESDIR/$filename
+	echo "$filename" >$INTFILE
+	exit -1
+' INT
+
+#
+# 彩色输出
+#
+NORMAL=$(tput sgr0)
+GREEN=$(tput setaf 2; tput bold)
+YELLOW=$(tput setaf 3)
+RED=$(tput setaf 1)
+function red() {
+    echo -e "$RED$*$NORMAL"
+}
+ 
+function green() {
+    echo -e "$GREEN$*$NORMAL"
+}
+ 
+function yellow() {
+    echo -e "$YELLOW$*$NORMAL"
+}
 
 
 # 从下载的网页中提取小说内容
 # 参数0表示要提取内容的网页
 extract_page(){ 
-	echo "extract page $1"
+	green "Extract page $1"
 
 	# 得到章节名称
+	# title=`grep "<h1>" $1 | sed -e "s=^.*<h1>==" -e "s=</h1>==" | tr ' ' '_'`
+	# 上面的写法有问题，貌似最后有一个回车
 	title=`grep "<h1>" $1 | cut -d'>' -f2 | cut -d'<' -f1 | tr ' ' '_'`
 	title=$title$SUFFIX
 
 	# 得到卷名
 	chapter=` echo $title | cut -d'_' -f1`
-	echo -e "title = $title\nchapter = $chapter"
+	green "Title : $title -->Chapter : $chapter"
 
 	# 创建卷目录
 	if [ ! -d  $NOVELDIR/$chapter ];then
 		mkdir -p $NOVELDIR/$chapter
 	else
-		echo "directory $chapter exists."
+		yellow "Directory $chapter exists."
 	fi
 
 	# 提取小说内容保存在相应卷目录
@@ -45,34 +86,50 @@ extract_page(){
 				| sed 's=<span[^<]*</span==g'  \
 					| tr "<p>/h1" "      ">$filepath
 	else
-		echo "file $title exists"
+		yellow "File $title exists"
 	fi
-
+	green "Done."
 }
 
 # 下载每个页面，并调用extract_page来提取小说内容
 down_extract(){
+	# 检测是否需要断点续传
+	if [ -e $INTFILE ]; then
+		red "Detect a interrupt, and continue..."
+		intpoint=`cat $INTFILE` # 得到中断时，正在下载的网页名称
+		red "Continue downloading ：$intpoint"
+		echo $MAINURL/$intpoint >$URLSINT # 因为中断的时候最后一个被删除，所以把它放到第一个，继续下载
+		sed '1,/'"$intpoint"'/d' $URLS >>$URLSINT # 然后找到它后面的网址，也加入URLSINT文件
+		#rm -f $URLS	# 删除原来的urls文件
+		URLS=$URLSINT   # 修改URLS变量指向新的urlsint文件
+	fi
 
 	# for i in `cat $URLS | xargs`	# 使用xargs以防止参数过大。有必要吗？
 	for i in `cat $URLS`	
 	do
 		filename=`basename $i`
 		if [ ! -e $PAGESDIR/$filename ]; then
-			wget -P $PAGESDIR $i
+			green "Downloading page :$i"
+			wget -P $PAGESDIR $i 1>/dev/null 2>/dev/null
+			green "Done."
 		else
-			echo "$filename already exists."
+			yellow "$filename already exists."
 		fi
 		extract_page $PAGESDIR/$filename
 	done
+
+	red "Finished."
 }
 
-# 得到含有所有章节链接的网页
+# 得到含有所以章节连接的网页
 get_index(){
 	if [ ! -e $MAINPG ]; then
 		# wget -P $TMP $MAINURL # 1>/dev/null 2>/dev/null  -P 用来指定下载目录
-		wget -P $TMP $MAINURL # 1>/dev/null 2>/dev/null 
+		green "Downloading $MAINURL/index.html"
+		wget -P $TMP $MAINURL  1>/dev/null 2>/dev/null 
+		green "Done."
 	else
-		echo "index.html already exists."
+		yellow "index.html already exists."
 	fi
 }
 
@@ -85,25 +142,23 @@ parse_index(){
 		-e  '/最新发布/,$d' $MAINPG \
 			| grep "href"  \
 				| cut -d"\"" -f2 >$URLS
-	echo "Get all urls in $URLS"
+	green "Get all urls in $URLS"
 }
 
 
 # 
-# start
+# 程序开始
 #
 
 # 创建临时目录
 if [ ! -d $TMP ]; then
-	echo -e "Creat temporary directory: \
-		\n$TMP\n$PAGESDIR\n$NOVELDIR"
+	green  "Creat temporary directory:$TMP,$PAGESDIR,$NOVELDIR"
 	mkdir -p $TMP/{pages,novel} || {
-		echo -e "Error while creating temporary directory: \
-			\n$TMP\n$PAGESDIR\n$NOVELDIR"
+		red  "Error while creating temporary directory:$TMP,$PAGESDIR,$NOVELDIR"
 		exit -1
 	}
 else
-	echo "Directory $TMP exists."
+	yellow "Directory $TMP exists."
 fi 
 
 
